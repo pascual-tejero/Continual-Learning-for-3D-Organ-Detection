@@ -1,6 +1,7 @@
 """Module containing the trainer of the transoar project."""
 
 import copy
+import itertools
 import torch
 from torch.cuda.amp import GradScaler, autocast
 from torch.utils.tensorboard import SummaryWriter
@@ -12,6 +13,31 @@ from transoar.inference import inference
 import matplotlib.pyplot as plt
 from torchvision.transforms import ToTensor
 import io
+from transoar.data.dataloader import get_loader_CLreplay_selected_samples
+from transoar.models.transoarnet import TransoarNet
+
+from transoar.utils.io import write_json
+import os
+import json
+import glob
+
+ABDOMENCT_1K = {
+    "num_classes": 5,
+    "labels": {"1": "liver", "2": "right kidney", "3": "spleen", "4": "pancreas", "5": "left kidney"},
+    "labels_small": {"4": "pancreas"},
+    "labels_mid": {"2": "right kidney", "3": "spleen", "5": "left kidney"},
+    "labels_large": {"1": "liver"}
+}
+
+WORD = {
+    "num_classes": 10,
+    "labels": {"1": "liver", "2": "right kidney", "3": "spleen", "4": "pancreas", "5": "left kidney", 
+               "6": "stomach", "7": "duodenum", "8": "colon", "9": "intestine", "10": "bladder"},
+    "labels_small": {"4": "pancreas", "7": "duodenum"},
+    "labels_mid": {"2": "right kidney", "3": "spleen", "5": "left kidney", "10": "bladder"},
+    "labels_large": {"1": "liver", "6": "stomach", "8": "colon", "9": "intestine"}
+}
+
 
 # helper function: generate box_plot of grads in tensorboard
 def gen_box_plot(grads_list, num_epoch_list, name=None):
@@ -25,14 +51,15 @@ def gen_box_plot(grads_list, num_epoch_list, name=None):
     buf.seek(0)
     return buf
 
-class Trainer:
+class Trainer_CL:
 
     def __init__(
-        self, train_loader, val_loader, model, criterion, optimizer, scheduler,
-        device, config, path_to_run, epoch, metric_start_val, dense_hybrid_criterion
+        self, train_loader, val_loader, test_loader, model, criterion, optimizer, scheduler,
+        device, config, path_to_run, epoch, metric_start_val, dense_hybrid_criterion, aux_model, old_model
     ):
         self._train_loader = train_loader
         self._val_loader = val_loader
+        self._test_loader = test_loader
         self._model = model
         self._criterion = criterion
         self._optimizer = optimizer
@@ -46,6 +73,8 @@ class Trainer:
         self._hybrid = config.get('hybrid_matching', False)
         self._hybrid_K = config.get('hybrid_K', 0)
         self._dense_hybrid_criterion = dense_hybrid_criterion
+        self._aux_model = aux_model
+        self._old_model = old_model
         
         if self.log_grad:
             self.log_grads_list_pos = []
@@ -54,8 +83,8 @@ class Trainer:
 
         self._writer = SummaryWriter(log_dir=path_to_run)
         self._scaler = GradScaler()
-        
-        self._evaluator = DetectionEvaluator(
+
+        self._evaluator_val = DetectionEvaluator(
             classes=list(config['labels'].values()),
             classes_small=config['labels_small'],
             classes_mid=config['labels_mid'],
@@ -64,10 +93,26 @@ class Trainer:
             iou_range_coco=(0.5, 0.95, 0.05),
             sparse_results=True
         )
+        
 
         # Init main metric for checkpoint
         self._main_metric_key = 'mAP_coco'
         self._main_metric_max_val = metric_start_val
+
+        self.best_performance_value = 0 # for test performance to save best model
+        
+        # In case of CL_replay or mixing training, we need to keep track of the samples
+        if self._config["only_class_labels"] and (self._config["CL_replay"] or self._config["mixing_datasets"]):
+            self.flag_b2_ocl_re_mix = True
+            self.flag_b1_ocl = False
+            assert self._config["batch_size"] == 2, "Batch size must be 2 for or mixing training CL_replay with only class labels"
+        elif self._config["only_class_labels"]:
+            self.flag_b2_ocl_re_mix = False
+            self.flag_b1_ocl = True
+            assert self._config["batch_size"] == 1, "Batch size must be 1 for only class labels"
+        else:
+            self.flag_b2_ocl_re_mix = False
+            self.flag_b1_ocl = False
     
     def _train_one_epoch(self, num_epoch):
         self._model.train()
@@ -101,37 +146,107 @@ class Trainer:
         pos_query_grads_list = torch.Tensor([])
         neg_query_grads_list = torch.Tensor([])
 
-        progress_bar = tqdm(self._train_loader)
-        for data, _, bboxes, seg_targets in progress_bar:
-            # Put data to gpu
-            data, seg_targets = data.to(device=self._device), seg_targets.to(device=self._device)
+        # self._replay_samples
         
-            det_targets = []
-            for item in bboxes:
-                target = {
-                    'boxes': item[0].to(dtype=torch.float, device=self._device),
-                    'labels': item[1].to(device=self._device)
-                }
-                det_targets.append(target)
-            # print('det_targets: ', det_targets) 
-            # quit()
 
+        progress_bar = tqdm(self._train_loader)
+
+        for data, _, bboxes, seg_targets in progress_bar:
+
+            data = data.to(device=self._device)
+            det_targets = []
+
+            if self.flag_b2_ocl_re_mix:
+                # In the case of CL_replay or mixing training, WORD and ABDOMENCT-1K datasets are mixed
+                # in a interleaved way. The first sample is from WORD dataset and the second sample is from
+                # ABDOMENCT-1K dataset, and so on. Therefore, we remove segmentation maps and bboxes from WORD,
+                # and only keep class labels. For ABDOMENCT-1K, we keep all the data.
+
+                # Since batch size is 2, we have two samples in the batch. We have to remove the first sample
+                # from WORD dataset and keep only class labels. For the second sample, we keep all the data.
+
+                # Put data to gpu
+                seg_targets = seg_targets[1, :, :, :, :].to(device=self._device).unsqueeze(0)
+
+                det_targets = []
+                for idx_item, item in enumerate(bboxes):
+                    if idx_item == 0:
+                        target = {
+                            'boxes': None,
+                            'labels': item[1].to(device=self._device)
+                        }
+                    else:
+                        target = {
+                            'boxes': item[0].to(dtype=torch.float, device=self._device),
+                            'labels': item[1].to(device=self._device)
+                        }
+                    det_targets.append(target)
+
+                    if self._config["remove_labels"]:
+                        target['labels'][target['labels'] > 5] = 0
+
+            elif self.flag_b1_ocl:
+                seg_targets = None
+
+                for item in bboxes:
+                    target = {
+                        'boxes': None,
+                        'labels': item[1].to(device=self._device) 
+                    }
+                    det_targets.append(target)
+
+                    if self._config["remove_labels"]:
+                        target['labels'][target['labels'] > 5] = 0
+                    
+            else:
+                # Put data to gpu
+                seg_targets = seg_targets.to(device=self._device)
+
+                det_targets = []
+                for item in bboxes:
+                    target = {
+                        'boxes': item[0].to(dtype=torch.float, device=self._device),
+                        'labels': item[1].to(device=self._device)
+                    }
+                    # Remove those class labels whose value is between 6 and 10
+                    if self._config["remove_labels"]:
+                        target['labels'][target['labels'] > 5] = 0
+                    det_targets.append(target)
+        
             # Make prediction
-            with autocast(): 
-                # print(det_targets)
-                # # Change from cx,cy,cz,w,h,d to x1,y1,z1,x2,y2,z2
-                # for target in det_targets:
-                #     target['boxes'] = torch.cat((target['boxes'][:, :3] - target['boxes'][:, 3:]/2, 
-                #                                 target['boxes'][:, :3] + target['boxes'][:, 3:]/2), dim=1)
-                # print("=====================================")
-                # print('det_targets: ', det_targets)
-                # quit()
+            with autocast():   
+                # Main model loss
                 out, contrast_losses, dn_meta = self._model(data, det_targets, num_epoch=num_epoch)
-                loss_dict, pos_indices = self._criterion(out, det_targets, seg_targets, dn_meta, num_epoch=num_epoch)
+                
+                loss_dict, pos_indices = self._criterion(out, det_targets, seg_targets, dn_meta, 
+                                                         num_epoch, self.flag_b2_ocl_re_mix,
+                                                         self.flag_b1_ocl)
 
                 if self._criterion._seg_proxy: # log Hausdorff
                     hd95 = loss_dict['hd95'].item()
-                del loss_dict['hd95'] # remove HD from loss, so it does not influence loss_abs
+                del loss_dict['hd95'] # remove Hausdorff distance from loss, so it does not influence loss_abs
+
+                # Auxiliary model loss
+                if self._aux_model is not None:   
+                    aux_out = self._aux_model(data)
+                    loss_dict_aux, _ = self._criterion(aux_out, det_targets, seg_targets, dn_meta, num_epoch,
+                                                         self.flag_b2_ocl_re_mix, self.flag_b1_ocl)
+
+                    loss_dict["aux_model"] = 0 # initialize loss entry
+                    del loss_dict_aux['hd95'] # remove Hausdorff distance from loss, so it does not influence loss_abs
+                    for key, value in loss_dict_aux.items():
+                        loss_dict["aux_model"] += value 
+                
+                # Old model loss
+                if self._old_model is not None: 
+                    old_out = self._old_model(data)
+                    loss_dict_old, _ = self._criterion(old_out, det_targets, seg_targets, dn_meta, num_epoch,
+                                                         self.flag_b2_ocl_re_mix, self.flag_b1_ocl)
+
+                    loss_dict["old_model"] = 0 # Initialize loss entry
+                    del loss_dict_old['hd95'] # remove Hausdorff distance from loss, so it does not influence loss_abs
+                    for key, value in loss_dict_old.items():
+                        loss_dict["old_model"] += value
 
                 if self._hybrid: # hybrid matching
                     outputs_one2many = dict()
@@ -156,17 +271,16 @@ class Trainer:
                         else:
                             loss_dict[key + "_one2many"] = value * self._config['hybrid_loss_weight_one2many']
 
-
-                # Create absolute loss and mult with loss coefficient
+                # Create absolute loss and mult with loss coefficient                
                 loss_abs = 0
                 for loss_key, loss_val in loss_dict.items():
                     loss_abs += loss_val * self._config['loss_coefs'][loss_key.split('_')[0]]
                 for loss_key, loss_val in contrast_losses.items():
                     loss_abs += loss_val # already multiplied coefficient in transoarnet.py
                     loss_contrast_agg += loss_val 
-
-            self._optimizer.zero_grad()
-            self._scaler.scale(loss_abs).backward()
+                    
+            self._optimizer.zero_grad() # Zero gradients
+            self._scaler.scale(loss_abs).backward() # Backward pass
             
             # Clip grads to counter exploding grads
             max_norm = self._config['clip_max_norm']
@@ -199,6 +313,9 @@ class Trainer:
             loss_cls_agg += loss_dict['cls'].item()
             loss_seg_ce_agg += loss_dict['segce'].item()
             loss_seg_dice_agg += loss_dict['segdice'].item()
+            loss_aux_model = loss_dict["aux_model"].item() if self._aux_model is not None else 0
+            loss_old_model = loss_dict["old_model"].item() if self._old_model is not None else 0
+            
             if self._hybrid: # hybrid matching
                 loss_bbox_one2many_agg += loss_dict['bbox_one2many'].item()
                 loss_giou_one2many_agg += loss_dict['giou_one2many'].item()
@@ -253,6 +370,9 @@ class Trainer:
         loss_cls = loss_cls_agg / len(self._train_loader)
         loss_seg_ce = loss_seg_ce_agg / len(self._train_loader)
         loss_seg_dice = loss_seg_dice_agg / len(self._train_loader)
+        loss_aux_model = loss_aux_model / len(self._train_loader) if self._aux_model is not None else 0
+        loss_old_model = loss_old_model / len(self._train_loader) if self._old_model is not None else 0
+
         if self._hybrid: # hybrid matching
             loss_bbox_one2many = loss_bbox_one2many_agg / len(self._train_loader)
             loss_giou_one2many = loss_giou_one2many_agg / len(self._train_loader)
@@ -293,6 +413,8 @@ class Trainer:
                     cls_loss=loss_cls,
                     seg_ce_loss=loss_seg_ce,
                     seg_dice_loss=loss_seg_dice,
+                    aux_model_loss=loss_aux_model,
+                    old_model_loss=loss_old_model,
                     seg_hd95=seg_hd95, # log Hausdorff
                     bbox_loss_one2many = loss_bbox_one2many,
                     giou_loss_one2many = loss_giou_one2many,
@@ -309,6 +431,8 @@ class Trainer:
                 cls_loss=loss_cls,
                 seg_ce_loss=loss_seg_ce,
                 seg_dice_loss=loss_seg_dice,
+                aux_model_loss=loss_aux_model,
+                old_model_loss=loss_old_model,
                 seg_hd95=seg_hd95, # log Hausdorff
                 contrast_loss=loss_contrast,
             )
@@ -327,7 +451,79 @@ class Trainer:
                 for name, param in self._model.named_parameters():
                     if param.requires_grad and param.grad is not None:
                         self._writer.add_histogram('grads/' + name, param.grad, int(num_epoch))
+
+    @torch.no_grad()
+    def _test(self, num_epoch):
+        self._model.eval() # Set model to evaluation mode
+
+        mean_mAP_coco = []
+
+        # Test for each dataset (WORD and ABDOMEN_CT_1K)
+        for idx, dataloader_test in enumerate(self._test_loader):
+            
+            if idx == 0: # WORD dataset
+                evaluator_test = DetectionEvaluator(
+                    classes=list(WORD['labels'].values()),
+                    classes_small=WORD['labels_small'],
+                    classes_mid=WORD['labels_mid'],
+                    classes_large=WORD['labels_large'],
+                    iou_range_nndet=(0.1, 0.5, 0.05),
+                    iou_range_coco=(0.5, 0.95, 0.05),
+                    sparse_results=False
+                )
+            else: # ABDOMEN_CT_1K dataset
+                evaluator_test = DetectionEvaluator(
+                    classes=list(ABDOMENCT_1K['labels'].values()),
+                    classes_small=ABDOMENCT_1K['labels_small'],
+                    classes_mid=ABDOMENCT_1K['labels_mid'],
+                    classes_large=ABDOMENCT_1K['labels_large'],
+                    iou_range_nndet=(0.1, 0.5, 0.05),
+                    iou_range_coco=(0.5, 0.95, 0.05),
+                    sparse_results=False
+                )
+
+            for data, _, bboxes, _, _ in tqdm(dataloader_test):
+
+                data = data.to(device=self._device)
+
+                targets = {
+                    'boxes': bboxes[0][0].to(dtype=torch.float, device=self._device),
+                    'labels': bboxes[0][1].to(device=self._device)
+                }
+
+                out = self._model(data)
+
+                pred_boxes, pred_classes, pred_scores = inference(out)
                 
+                gt_boxes = [targets['boxes'].detach().cpu().numpy()]
+                gt_classes = [targets['labels'].detach().cpu().numpy()]
+
+                # Add pred to evaluator
+                evaluator_test.add(
+                    pred_boxes=pred_boxes,
+                    pred_classes=pred_classes,
+                    pred_scores=pred_scores,
+                    gt_boxes=gt_boxes,
+                    gt_classes=gt_classes
+                )
+
+            metric_scores = evaluator_test.eval()
+            
+            os.makedirs(self._path_to_run / 'test_during_training', exist_ok=True)
+            os.makedirs(self._path_to_run / 'test_during_training' / f"{num_epoch}_epoch", exist_ok=True)
+
+            mean_mAP_coco.append(metric_scores['mAP_coco'])
+
+            if idx == 0: # WORD dataset
+                write_json(metric_scores, self._path_to_run / 'test_during_training' / f"{num_epoch}_epoch" / 'WORD_dataset.json')
+            else: # ABDOMEN_CT_1K dataset
+                write_json(metric_scores, self._path_to_run / 'test_during_training' / f"{num_epoch}_epoch" / f'ABDOMENCT-1K_dataset.json')
+        
+        mean_mAP_coco = np.mean(mean_mAP_coco)
+        
+        if self.best_performance_value < mean_mAP_coco:
+            self.best_performance_value = mean_mAP_coco
+            self._save_checkpoint(num_epoch, f'model_best_test_{mean_mAP_coco:.3f}_in_ep{num_epoch}.pt')
 
     @torch.no_grad()
     def _validate(self, num_epoch):
@@ -350,10 +546,13 @@ class Trainer:
         loss_enc_giou_agg = 0
         loss_enc_cls_agg = 0
         progress_bar = tqdm(self._val_loader)
-        for data, _, bboxes, seg_targets in progress_bar:
+        for idx, (data, _, bboxes, seg_targets) in enumerate(progress_bar):
             # Put data to gpu
             data, seg_targets = data.to(device=self._device), seg_targets.to(device=self._device)
-        
+
+            if self._config["only_class_labels"]:      
+                seg_targets[seg_targets > 5] = 0
+
             det_targets = []
             for item in bboxes:
                 target = {
@@ -361,15 +560,35 @@ class Trainer:
                     'labels': item[1].to(device=self._device)
                 }
                 det_targets.append(target)
+                if self._config["remove_labels"]:
+                    target['labels'][target['labels'] > 5] = 0
 
             # Make prediction
             with autocast():
                 out = self._model(data)
-                loss_dict, _ = self._criterion(out, det_targets, seg_targets)
+                loss_dict, _ = self._criterion(out, det_targets, seg_targets, num_epoch=num_epoch)
 
                 if self._criterion._seg_proxy: # log Hausdorff
                     hd95 = loss_dict['hd95'].item()
                 del loss_dict['hd95'] # remove HD from loss, so it does not influence loss_abs
+
+                # Auxiliary model loss
+                if self._aux_model is not None:
+                    aux_out = self._aux_model(data) 
+                    loss_dict_aux, _ = self._criterion(aux_out, det_targets, seg_targets)
+                    loss_dict["aux_model"] = 0 # initialize loss entry
+                    del loss_dict_aux['hd95'] # remove Hausdorff distance from loss, so it does not influence loss_abs
+                    for key, value in loss_dict_aux.items():
+                        loss_dict["aux_model"] += value
+
+                # Old model loss
+                if self._old_model is not None:
+                    old_out = self._old_model(data)
+                    loss_dict_old, _ = self._criterion(old_out, det_targets, seg_targets)
+                    loss_dict["old_model"] = 0 # Initialize loss entry
+                    del loss_dict_old['hd95'] # remove Hausdorff distance from loss, so it does not influence loss_abs
+                    for key, value in loss_dict_old.items():
+                        loss_dict["old_model"] += value
 
                 # Create absolute loss and mult with loss coefficient
                 loss_abs = 0
@@ -378,7 +597,7 @@ class Trainer:
 
             # Evaluate validation predictions based on metric
             pred_boxes, pred_classes, pred_scores = inference(out)
-            self._evaluator.add(
+            self._evaluator_val.add(
                 pred_boxes=pred_boxes,
                 pred_classes=pred_classes,
                 pred_scores=pred_scores,
@@ -392,6 +611,9 @@ class Trainer:
             loss_cls_agg += loss_dict['cls'].item()
             loss_seg_ce_agg += loss_dict['segce'].item()
             loss_seg_dice_agg += loss_dict['segdice'].item()
+            loss_aux_model = loss_dict["aux_model"].item() if self._aux_model is not None else 0
+            loss_old_model = loss_dict["old_model"].item() if self._old_model is not None else 0
+
             if self._criterion._seg_proxy: # log Hausdorff
                 hd95_agg += hd95
 
@@ -420,13 +642,16 @@ class Trainer:
         loss_cls = loss_cls_agg / len(self._val_loader)
         loss_seg_ce = loss_seg_ce_agg / len(self._val_loader)
         loss_seg_dice = loss_seg_dice_agg / len(self._val_loader)
+        loss_aux_model = loss_aux_model / len(self._val_loader) if self._aux_model is not None else 0
+        loss_old_model = loss_old_model / len(self._val_loader) if self._old_model is not None else 0
+
         if self._criterion._seg_proxy:  # log Hausdorff
             seg_hd95 = hd95_agg / len(self._val_loader)
         else:
             seg_hd95 = 0
 
-        metric_scores = self._evaluator.eval()
-        self._evaluator.reset()
+        metric_scores = self._evaluator_val.eval()
+        self._evaluator_val.reset()
 
         # Check if new best checkpoint
         if metric_scores[self._main_metric_key] >= self._main_metric_max_val \
@@ -434,7 +659,7 @@ class Trainer:
             self._main_metric_max_val = metric_scores[self._main_metric_key]
             self._save_checkpoint(
                 num_epoch,
-                f'model_best_{metric_scores[self._main_metric_key]:.3f}_in_ep{num_epoch}.pt'
+                f'model_best_val_{metric_scores[self._main_metric_key]:.3f}_in_ep{num_epoch}.pt'
             )
             
         if len(loss_aux_agg) != 0:
@@ -454,7 +679,9 @@ class Trainer:
             giou_loss=loss_giou,
             cls_loss=loss_cls,
             seg_ce_loss=loss_seg_ce,
-            seg_dice_loss=loss_seg_dice
+            seg_dice_loss=loss_seg_dice,
+            aux_model_loss=loss_aux_model,
+            old_model_loss=loss_old_model,
         )
 
         self._write_to_logger(
@@ -475,7 +702,13 @@ class Trainer:
     def run(self):
         if self._epoch_to_start == 0:   # For initial performance estimation
             self._validate(0)
-        
+            if self._test_loader is not None:
+                self._test(0)
+
+        if self._config['CL_replay']: # Select samples for replay
+            self._select_samples_for_replay()
+
+                
         for epoch in range(self._epoch_to_start + 1, self._config['epochs'] + 1):
             print("starting epoch ", epoch)
             self._train_one_epoch(epoch)
@@ -496,16 +729,84 @@ class Trainer:
                 self._writer.add_image('boxplot of pos queries grads', image_pos, epoch)
                 self._writer.add_image('boxplot of neg queries grads', image_neg, epoch)
 
+            # Validate model on validation set
             if epoch % self._config['val_interval'] == 0:
                 self._validate(epoch)
+
+            # Test model on test set
+            if epoch % self._config['test_interval'] == 0 and self._test_loader is not None:
+                self._test(epoch)
 
             self._scheduler.step()
 
             if not self._config['debug_mode']:
                 self._save_checkpoint(epoch, 'model_last.pt')
-            # fixed checkpoints at each 200 epochs:
-            if (epoch % 500) == 0:
+
+            # fixed checkpoint saving interval and additional checkpoints every 500 epochs
+            # if (epoch % self.config['save_checkpoint_interval'] == 0) or (epoch % 500 == 0):
+            if epoch % 500 == 0:
                 self._save_checkpoint(epoch, f'model_epoch_{epoch}.pt')
+
+
+    def _select_samples_for_replay(self):
+        
+        evaluator_replay = DetectionEvaluator(
+            classes=list(self._config['labels'].values()),
+            classes_small=self._config['labels_small'],
+            classes_mid=self._config['labels_mid'],
+            classes_large=self._config['labels_large'],
+            iou_range_nndet=(0.1, 0.5, 0.05),
+            iou_range_coco=(0.5, 0.95, 0.05),
+            sparse_results=False
+        )
+        replay_scores = {}
+
+        # Load old model from config["CL_models"]["old_model_path"]
+        old_model = TransoarNet(self._config).to(device=self._device)
+        checkpoint_old_model = torch.load(self._config["CL_models"]["old_model_path"])
+        old_model.load_state_dict(checkpoint_old_model['model_state_dict'])
+        old_model.eval()
+        for param in old_model.parameters():
+            param.requires_grad = False
+
+        for data, _, bboxes, _, path in tqdm(self._train_loader):
+
+            data = data.to(device=self._device)
+
+            targets = {
+                'boxes': bboxes[0][0].to(dtype=torch.float, device=self._device),
+                'labels': bboxes[0][1].to(device=self._device)
+            }
+
+            out = old_model(data)
+
+            pred_boxes, pred_classes, pred_scores = inference(out)
+            
+            gt_boxes = [targets['boxes'].detach().cpu().numpy()]
+            gt_classes = [targets['labels'].detach().cpu().numpy()] 
+
+            # Add pred to evaluator
+            result = evaluator_replay.replay_evaluator(
+                pred_boxes=pred_boxes,
+                pred_classes=pred_classes,
+                pred_scores=pred_scores,
+                gt_boxes=gt_boxes,
+                gt_classes=gt_classes
+            )
+            metric_scores = evaluator_replay.eval_replay(result)
+            replay_scores[path[0]] = metric_scores['mAP_coco']
+
+        # Sort the replay scores in ascending order
+        replay_scores = dict(sorted(replay_scores.items(), key=lambda item: item[1]))
+
+        # Get the top CL_replay_samples samples
+        replay_samples = dict(itertools.islice(replay_scores.items(), self._config['CL_replay_samples']))
+
+        self._train_loader = None
+        self._train_loader = get_loader_CLreplay_selected_samples(config=self._config,
+                                                                split='train',
+                                                                batch_size=self._config['batch_size'],
+                                                                selected_samples=replay_samples)
 
     def _write_to_logger(self, num_epoch, category, **kwargs):
         for key, value in kwargs.items():
@@ -514,8 +815,11 @@ class Trainer:
 
     def _save_checkpoint(self, num_epoch, name):
         # Delete prior best checkpoint
-        if 'best' in name:
-            [path.unlink() for path in self._path_to_run.iterdir() if 'best' in str(path)]
+        if 'model_best_val' in name:
+            [path.unlink() for path in self._path_to_run.iterdir() if 'model_best_val' in str(path)]
+
+        if 'model_best_test' in name:
+            [path.unlink() for path in self._path_to_run.iterdir() if 'model_best_test' in str(path)]
 
         torch.save({
             'epoch': num_epoch,

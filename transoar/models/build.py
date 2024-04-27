@@ -10,6 +10,10 @@ from transoar.models.backbones.resnet3d import ResNet3D
 from transoar.models.backbones.MSAViT import MSAViT
 from transoar.models.backbones.swin_unetr import Swin_UNETR
 
+from transoar.utils.io import load_json
+from pathlib import Path
+import os
+
 def build_backbone(config):
     if config['name'].lower() in ['attn_fpn']:
         return AttnFPN(config)
@@ -62,6 +66,7 @@ def build_criterion(config):
             class_matching_query_split=config.get('hybrid_dense_class_matching_query_split', []),
             recursive_dm_dn=config['neck'].get('dn', {}).get('enabled', False) # if dn and dm are enabled, use them recursively
         )
+
         hybrid_dense_criterion = TransoarCriterion(
             num_classes=config['neck']['num_classes'],
             matcher=hybrid_dense_matcher,
@@ -69,8 +74,17 @@ def build_criterion(config):
             seg_fg_bg=config['backbone']['fg_bg'],
             seg_msa=config['backbone'].get('use_msa_seg_loss', False),
             focal_loss=config.get('focal_loss', False),
+            config=config
         )
 
+    # Check if there is extra classes in the dataset
+    data_path = os.environ.get('TRANSOAR_DATA')
+    data_dir = Path(data_path).resolve()
+    data_config = load_json(data_dir / config['dataset'] / "data_info.json")
+    num_classes = len(data_config['labels'])
+    extra_classes = config["backbone"]["num_organs"] - num_classes
+    num_classes_orig_dataset = len(data_config['labels'])
+   
     matcher = HungarianMatcher(
         cost_class=config['set_cost_class'],
         cost_bbox=config['set_cost_bbox'],
@@ -79,7 +93,10 @@ def build_criterion(config):
         dense_matching_lambda=config.get('dense_matching_lambda', 0.5),
         class_matching=config.get('class_matching', False),
         class_matching_query_split=config.get('class_matching_query_split', []),
-        recursive_dm_dn=config['neck'].get('dn', {}).get('enabled', False) # if dn and dm are enabled, use them recursively
+        recursive_dm_dn=config['neck'].get('dn', {}).get('enabled', False), # if dn and dm are enabled, use them recursively
+        extra_classes=extra_classes,
+        num_classes_orig_dataset=num_classes_orig_dataset,
+        config=config
     )
 
     criterion = TransoarCriterion(
@@ -89,7 +106,11 @@ def build_criterion(config):
         seg_fg_bg=config['backbone']['fg_bg'],
         seg_msa=config['backbone'].get('use_msa_seg_loss', False),
         focal_loss=config.get('focal_loss', False),
+        extra_classes=extra_classes,
+        num_classes_orig_dataset=num_classes_orig_dataset, 
+        config=config
     )
+
     if config.get('hybrid_dense_matching', False):
         return criterion, hybrid_dense_criterion
     else:

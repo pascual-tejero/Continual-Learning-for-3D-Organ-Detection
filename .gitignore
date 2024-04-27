@@ -1,0 +1,21 @@
+# Ignore any file inside transoar.egg-info
+global-exclude *.egg-info
+
+# Ignore pycache
+global-exclude __pycache__
+*__pycache__*
+
+# Ignore any file inside .git
+global-exclude .git
+
+# Ignore any file inside .github
+global-exclude .github
+
+# Ignore any file inside the folder dist
+global-exclude dist
+
+# Ignore everything inside runs folder 
+runs/* 
+
+# Ignore all files with .pyc extension
+*.pyc

@@ -1,13 +1,27 @@
-torch==1.7.1+cu101
-torchvision==0.8.2+cu101
+# pip3 install torch==1.10.1+cu113 torchvision==0.11.2+cu113 torchaudio===0.10.1+cu113 -f https://download.pytorch.org/whl/cu113/torch_stable.html
+
+# torch==1.10.1 # torch==1.7.1
+# torchvision==0.11.2 # torchvision==0.8.2
 tqdm==4.62.3
-monai==0.7.0
+monai==1.0.0 # monai==0.7.0
 batchgenerators==0.23
 pyyaml==6.0
 SimpleITK==2.1.1
 nibabel==3.2.1
+tensorboard
+matplotlib
 
 # swin
 timm==0.4.12
 einops==0.3.2
 
+
+
+# python ./scripts/train_CL.py --config CL_methods/msa_def_detr_CL
+# python ./scripts/train.py --config msa_def_detr_TOTALSEGMENTATOR
+
+# Windows: 
+# SET TRANSOAR_DATA=C:\Users\pascu\Documents\Code_Thesis\datasets
+
+# Linux: 
+# export TRANSOAR_DATA=/mnt/nas/Projects/project_pascual/

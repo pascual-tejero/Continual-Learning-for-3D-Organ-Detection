@@ -1,50 +1,69 @@
 ##>>>> active session
 salloc -p lrz-dgx-a100-80x8 --ntasks=1 --gres=gpu:1 --time=72:00:00
-
-salloc -p lrz-dgx-a100-80x8 --gres=gpu:1 --time=72:00:00 --mem-per-gpu 512000
-salloc -p mcml-dgx-a100-40x8 --time 120:00:00 --gres gpu:1 -q mcml
+salloc -p mcml-dgx-a100-40x8 --time 96:00:00 --gres gpu:1 -q mcml
 
 
 
 ## activate the env
 ENV_name=msadet
-BASE_DIR=/dss/dsshome1/0A/di93liq
-ENV_DIR=ENVs_mori
-DATA_DIR=/dss/dssmcmlfs01/pr62la/pr62la-dss-0002/OrganDetection/DATASET/
+BASE_DIR=/dss/dsshome1/01/ge32fix2
+ENV_DIR=ENVS
+DATA_DIR=/dss/dsshome1/01/ge32fix2/DATASETS/
 
 srun --pty --container-mounts=${DATA_DIR}:/mnt/data,${BASE_DIR}:/mnt/code \
 --container-image=${BASE_DIR}/${ENV_DIR}/${ENV_name}.sqsh bash
 
 
-
-cd /dss/dsshome1/0A/di93liq/transoar_def_detr
+cd /mnt/code/OrganDETR
 ENV_name=msadet
-export TRANSOAR_DATA="/mnt/data/transoar_prep/dataset/"
+export TRANSOAR_DATA=/mnt/data/
 
 
+# test no error
+/opt/conda/envs/${ENV_name}/bin/python scripts/train.py --config CL_methods/TEST_NO_ERROR/test_run_no_error_WORD
+/opt/conda/envs/${ENV_name}/bin/python scripts/train.py --config CL_methods/TEST_NO_ERROR/test_run_no_error_ABDOMENCT-1K
+/opt/conda/envs/${ENV_name}/bin/python scripts/train_CL.py --config CL_methods/ABDOMENCT-1K_WORD/test_run_no_error_CLreg
+/opt/conda/envs/${ENV_name}/bin/python scripts/train_CL.py --config CL_methods/ABDOMENCT-1K_WORD/test_run_no_error_CLreg_fewshot
+/opt/conda/envs/${ENV_name}/bin/python scripts/train_CL.py --config CL_methods/ABDOMENCT-1K_WORD/test_run_no_error_CLreg_onlyClassLabels
+/opt/conda/envs/${ENV_name}/bin/python scripts/train_CL.py --config CL_methods/ABDOMENCT-1K_WORD/test_run_no_error_CLreplay
+/opt/conda/envs/${ENV_name}/bin/python scripts/train_CL.py --config CL_methods/ABDOMENCT-1K_WORD/test_run_no_error_CLreplay_fewshot
+/opt/conda/envs/${ENV_name}/bin/python scripts/train_CL.py --config CL_methods/ABDOMENCT-1K_WORD/test_run_no_error_CLreplay_onlyClassLabels
+/opt/conda/envs/${ENV_name}/bin/python scripts/train_CL.py --config CL_methods/ABDOMENCT-1K_WORD/test_run_no_error_mixing_datasets
+/opt/conda/envs/${ENV_name}/bin/python scripts/train_CL.py --config CL_methods/ABDOMENCT-1K_WORD/test_run_no_error_mixing_datasets_fewshot
+/opt/conda/envs/${ENV_name}/bin/python scripts/train_CL.py --config CL_methods/ABDOMENCT-1K_WORD/test_run_no_error_mixing_datasets_onlyClassLabels
 
-# train with attn_fpn as backbone
-/opt/conda/envs/${ENV_name}/bin/python scripts/train.py --config attn_fpn_def_detr_abdomen_full
-/opt/conda/envs/${ENV_name}/bin/python scripts/train.py --config attn_fpn_def_detr_abdomen
+# train
+/opt/conda/envs/${ENV_name}/bin/python scripts/train.py --config CL_methods/ABDOMENCT-1K_WORD/msa_def_detr_WORD
+/opt/conda/envs/${ENV_name}/bin/python scripts/train.py --config CL_methods/ABDOMENCT-1K_WORD/msa_def_detr_ABDOMENCT-1K
+/opt/conda/envs/${ENV_name}/bin/python scripts/train_CL.py --config CL_methods/ABDOMENCT-1K_WORD/msa_def_detr_CLreg
+/opt/conda/envs/${ENV_name}/bin/python scripts/train_CL.py --config CL_methods/ABDOMENCT-1K_WORD/msa_def_detr_CLreg_fewshot
+/opt/conda/envs/${ENV_name}/bin/python scripts/train_CL.py --config CL_methods/ABDOMENCT-1K_WORD/msa_def_detr_CLreg_onlyClassLabels
+/opt/conda/envs/${ENV_name}/bin/python scripts/train_CL.py --config CL_methods/ABDOMENCT-1K_WORD/msa_def_detr_CLreplay
+/opt/conda/envs/${ENV_name}/bin/python scripts/train_CL.py --config CL_methods/ABDOMENCT-1K_WORD/msa_def_detr_CLreplay_fewshot
+/opt/conda/envs/${ENV_name}/bin/python scripts/train_CL.py --config CL_methods/ABDOMENCT-1K_WORD/msa_def_detr_CLreplay_onlyClassLabels
+/opt/conda/envs/${ENV_name}/bin/python scripts/train_CL.py --config CL_methods/ABDOMENCT-1K_WORD/msa_def_detr_mixing_datasets
+/opt/conda/envs/${ENV_name}/bin/python scripts/train_CL.py --config CL_methods/ABDOMENCT-1K_WORD/msa_def_detr_mixing_datasets_fewshot
+/opt/conda/envs/${ENV_name}/bin/python scripts/train_CL.py --config CL_methods/ABDOMENCT-1K_WORD/msa_def_detr_mixing_datasets_onlyClassLabels
 
 
-
-# train with msavit as backbone
-/opt/conda/envs/${ENV_name}/bin/python scripts/train.py --config msa_def_detr_abdomen_full 
-/opt/conda/envs/${ENV_name}/bin/python scripts/train.py --config msa_def_detr_amos_full 
-
-
-
-
---config contrast_resnet_def_detr_abdomen
+# test
+/opt/conda/envs/${ENV_name}/bin/python scripts/test.py --run msa_def_detr_WORD_dataset --model_load best
+/opt/conda/envs/${ENV_name}/bin/python scripts/test.py --run msa_def_detr_ABDOMENCT-1K_dataset --model_load best
+/opt/conda/envs/${ENV_name}/bin/python scripts/test.py --run msa_def_detr_CLreg_ABDOMENCT-1K_WORD_datasets --model_load best
+/opt/conda/envs/${ENV_name}/bin/python scripts/test.py --run msa_def_detr_CLreg_ABDOMENCT-1K_WORD_datasets_few_shot --model_load best
+/opt/conda/envs/${ENV_name}/bin/python scripts/test.py --run msa_def_detr_ABDOMENCT-1K_WORD_datasets_mixing --model_load best
+/opt/conda/envs/${ENV_name}/bin/python scripts/test.py --run msa_def_detr_CLreplay_ABDOMENCT-1K_WORD_datasets --model_load best
 
 
+# Login to LRZ
+ssh login.ai.lrz.de -l ge32fix2
 
-# test 
-OCNFIG=def_detr_abdomenCT1k
-msa_def_detr_abdomen
+# Example copy dataset to LRZ from workstation
+scp -r test_dataset ge32fix2@login.ai.lrz.de:/dss/dsshome1/01/ge32fix2/DATASET
 
+# Quit environment
+exit
 
-/opt/conda/envs/${ENV_name}/bin/python scripts/test.py --run ${OCNFIG}
-
-
+# Tasks submitted
+squeue -u ge32fix2 # My tasks
+squeue # All tasks from users

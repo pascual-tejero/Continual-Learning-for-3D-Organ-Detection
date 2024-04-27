@@ -33,6 +33,12 @@ class TransoarNet(nn.Module):
         data_dir = Path(data_path).resolve()
         data_config = load_json(data_dir / config['dataset'] / "data_info.json")
         self.num_classes = len(data_config['labels'])
+        self.extra_classes = config["backbone"]["num_organs"] - self.num_classes
+
+        if self.extra_classes > 0:
+            self.num_classes = config["backbone"]["num_organs"]
+            self.num_classes_orig_dataset = len(data_config['labels'])
+
         config['neck']['num_classes'] = self.num_classes
         self._input_level = config['neck']['input_level']
 
@@ -95,11 +101,11 @@ class TransoarNet(nn.Module):
 
         if self._seg_proxy:
             in_channels = config['backbone']['start_channels']
-            out_channels = 2 if config['backbone']['fg_bg'] else config['neck']['num_organs'] + 1 # inc bg
+            out_channels = 2 if config['backbone']['fg_bg'] else config['neck']['num_organs'] + 1 # inc background
             self._seg_head = nn.Conv3d(in_channels, out_channels, kernel_size=1, stride=1)
         
 
-        if self._msa_seg:
+        if self._msa_seg: ################# MSA Segmentation
             in_channels = config['backbone']['fpn_channels']
             out_channels =  2 if config['backbone']['fg_bg'] else config['backbone']['num_organs'] + 1 
             self._seg_neck = nn.Conv3d(in_channels, out_channels, kernel_size=1, stride=1)
@@ -313,7 +319,12 @@ class TransoarNet(nn.Module):
                 tmp[..., :3] += reference
 
             outputs_coord = tmp.sigmoid()
-            
+            # print(f"Output coord: {outputs_coord.shape}")
+            # print(f"Output class: {outputs_class.shape}")
+            # print(f"Output class: {outputs_class}")
+            # print(f"Output coord: {outputs_coord}")
+            # quit()
+
             if self.hybrid and self.training:
                 outputs_classes.append(outputs_class[:, 0 : self.num_queries_one2one])
                 outputs_classes_one2many.append(outputs_class[:, self.num_queries_one2one :])
@@ -322,8 +333,7 @@ class TransoarNet(nn.Module):
             else:
                 outputs_classes.append(outputs_class)
                 outputs_coords.append(outputs_coord)
-            
-            
+
         if self.hybrid and self.training:
             outputs_classes_one2many = torch.stack(outputs_classes_one2many)
             # tensor shape: [num_decoder_layers, bs, num_queries_one2many, num_classes]
@@ -332,7 +342,10 @@ class TransoarNet(nn.Module):
 
         pred_logits = torch.stack(outputs_classes) # (bs, num_queries+num_noised_gt+num_dn, 6)
         pred_boxes = torch.stack(outputs_coords)
-        
+
+        if self.extra_classes > 0: # inc background class
+            pred_logits = pred_logits[:, :, :, :self.num_classes_orig_dataset + 1]
+
         # dn post process
         if self.dn['dn_number'] > 0 and dn_meta is not None:
             pred_logits, pred_boxes = dn_post_process(
@@ -353,6 +366,8 @@ class TransoarNet(nn.Module):
                     if int(key[-1]) < int(self._input_level[-1]):
                         continue
                     else:
+                        if self.extra_classes > 0: # inc background class
+                            value = value[:, :self.num_classes_orig_dataset + 1, :, :, :]
                         msa_seg.append(value)
             pred_seg = msa_seg
 
@@ -365,6 +380,8 @@ class TransoarNet(nn.Module):
                 b, c = item.size()[0:2]
                 item = item.view(b, c, *hwd)
                 item = self._seg_neck(item)
+                if self.extra_classes > 0: # inc background class
+                    item = item[:, :self.num_classes_orig_dataset + 1]
                 tmp += hwd_tmp
                 neck_enc_seg.append(item)
 
@@ -388,12 +405,13 @@ class TransoarNet(nn.Module):
                 out["aux_outputs"] = self._set_aux_loss(outputs_classes, outputs_coords)
                 out["aux_outputs_one2many"] = self._set_aux_loss(outputs_classes_one2many, outputs_coords_one2many)
 
-        else:
+        else: #################
             out = {
                 'pred_logits': pred_logits[-1][:, : self.num_queries], # Take output of last layer
                 'pred_boxes': pred_boxes[-1][:, : self.num_queries],
                 'pred_seg': pred_seg,
                 }
+
             if self._aux_loss:
                 out['aux_outputs'] = self._set_aux_loss(pred_logits[:, : self.num_queries], pred_boxes[:, : self.num_queries])
 

@@ -13,6 +13,8 @@ def generalized_bbox_iou_3d(bboxes1, bboxes2):
     """
     assert (bboxes1[:, 3:] >= bboxes1[:, :3]).all()
     assert (bboxes2[:, 3:] >= bboxes2[:, :3]).all()
+
+    
     iou, union = iou_3d(bboxes1, bboxes2)
 
     x1 = torch.min(bboxes1[:, None, 0], bboxes2[:, 0])

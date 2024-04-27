@@ -938,7 +938,7 @@ class Decoder(nn.Module):
         for idx, x in enumerate(reversed(lateral_out)):
             if idx != 0:
                 x = x + up
-            
+
             if idx < self._lateral_levels - 1:
                 up = self._up[idx](x)
 

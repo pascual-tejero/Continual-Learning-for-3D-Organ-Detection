@@ -73,7 +73,7 @@ class DetectionEvaluator:
         """
         return [[self.iou_thresholds.index(th) for th in m.get_iou_thresholds()]
                 for m in self.metrics]
-
+   
     def add(
         self,
         pred_boxes,
@@ -103,8 +103,8 @@ class DetectionEvaluator:
             dict: empty dict... detection metrics can only be evaluated at the end
         """
         # reduce class ids by 1 to start with 0
-        gt_classes = [batch_elem_classes -1 for batch_elem_classes in gt_classes]
-        pred_classes = [batch_elem_classes -1 for batch_elem_classes in pred_classes]
+        gt_classes = [batch_elem_classes-1 for batch_elem_classes in gt_classes]
+        pred_classes = [batch_elem_classes-1 for batch_elem_classes in pred_classes]
 
         if gt_ignore is None:   # only zeros -> don't ignore anything
             n = [0 if gt_boxes_img.size == 0 else gt_boxes_img.shape[0] for gt_boxes_img in gt_boxes]
@@ -116,6 +116,49 @@ class DetectionEvaluator:
             max_detections=self.max_detections))
 
         return {}
+    
+    def replay_evaluator(
+        self,
+        pred_boxes,
+        pred_classes,
+        pred_scores,
+        gt_boxes,
+        gt_classes,
+        gt_ignore=None
+    ):
+        """
+        Preprocess batch results for final evaluation
+
+        Args:
+            pred_boxes (Sequence[np.ndarray]): predicted boxes from single batch; List[[D, dim * 2]], D number of
+                predictions
+            pred_classes (Sequence[np.ndarray]): predicted classes from a single batch; List[[D]], D number of
+                predictions
+            pred_scores (Sequence[np.ndarray]): predicted score for each bounding box; List[[D]], D number of
+                predictions
+            gt_boxes (Sequence[np.ndarray]): ground truth boxes; List[[G, dim * 2]], G number of ground truth
+            gt_classes (Sequence[np.ndarray]): ground truth classes; List[[G]], G number of ground truth
+            gt_ignore (Sequence[Sequence[bool]]): specified if which ground truth boxes are not counted as true
+                positives (detections which match theses boxes are not counted as false positives either);
+                List[[G]], G number of ground truth
+
+        Returns
+            dict: empty dict... detection metrics can only be evaluated at the end
+        """
+        # reduce class ids by 1 to start with 0
+        gt_classes = [batch_elem_classes-1 for batch_elem_classes in gt_classes]
+        pred_classes = [batch_elem_classes-1 for batch_elem_classes in pred_classes]
+
+        if gt_ignore is None:   # only zeros -> don't ignore anything
+            n = [0 if gt_boxes_img.size == 0 else gt_boxes_img.shape[0] for gt_boxes_img in gt_boxes]
+            gt_ignore = [np.zeros(_n).reshape(-1) for _n in n]
+
+        results = matching_batch(
+            self.iou_fn, self.iou_thresholds, pred_boxes=pred_boxes, pred_classes=pred_classes,
+            pred_scores=pred_scores, gt_boxes=gt_boxes, gt_classes=gt_classes, gt_ignore=gt_ignore,
+            max_detections=self.max_detections)
+
+        return results
 
     def eval(self):
         """
@@ -130,6 +173,29 @@ class DetectionEvaluator:
         for metric_idx, metric in enumerate(self.metrics):
             _filter = partial(self.iou_filter, iou_idx=self.iou_mapping[metric_idx])
             iou_filtered_results = list(map(_filter, self.results_list))    # no filtering
+            
+            score, curve = metric(iou_filtered_results)
+            
+            if score is not None:
+                metric_scores.update(score)
+            
+            if curve is not None:
+                metric_curves.update(curve)
+        return metric_scores
+    
+    def eval_replay(self, results):
+        """
+        Accumulate results of individual batches and compute final metrics
+
+        Returns:
+            Dict[str, float]: dictionary with scalar values for evaluation
+            Dict[str, np.ndarray]: dictionary with arrays, e.g. for visualization of graphs
+        """
+        metric_scores = {}
+        metric_curves = {}
+        for metric_idx, metric in enumerate(self.metrics):
+            _filter = partial(self.iou_filter, iou_idx=self.iou_mapping[metric_idx])
+            iou_filtered_results = list(map(_filter, results))    # no filtering
             
             score, curve = metric(iou_filtered_results)
             

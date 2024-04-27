@@ -19,7 +19,8 @@ class HungarianMatcher(nn.Module):
     def __init__(self, cost_class: float = 1, cost_bbox: float = 1, cost_giou: float = 1, 
                  dense_matching: bool = False, dense_matching_lambda: float = 0.5,
                  class_matching: bool = False, class_matching_query_split: list = [],
-                 recursive_dm_dn = False):
+                 recursive_dm_dn = False, extra_classes: int = 0, num_classes_orig_dataset: int = 0,
+                 config=None):
         """Creates the matcher
         Params:
             cost_class: This is the relative weight of the classification error in the matching cost
@@ -38,6 +39,10 @@ class HungarianMatcher(nn.Module):
         self.class_matching = class_matching 
         self.query_split = class_matching_query_split
         self.recursive_dm_dn = recursive_dm_dn
+
+        self.extra_classes = extra_classes
+        self.num_classes_orig_dataset = num_classes_orig_dataset
+        self.config = config
         #assert (dense_matching != class_matching) or (not dense_matching and not class_matching) , "class matching in combination with dense matching not implemented yet"
         """#TODO add category wise matching
         self.classes_s = [4]
@@ -70,22 +75,23 @@ class HungarianMatcher(nn.Module):
 
         # We flatten to compute the cost matrices in a batch
         out_prob = outputs["pred_logits"].flatten(0, 1).softmax(-1)  # [batch_size * num_queries, num_classes]
-        out_bbox = outputs["pred_boxes"].flatten(0, 1)  # [batch_size * num_queries, 4]
+        out_bbox = outputs["pred_boxes"].flatten(0, 1)  # [batch_size * num_queries, 6]
 
+       
         # Also concat the target labels and boxes
         tgt_ids = torch.cat([v["labels"] for v in targets])
         tgt_bbox = torch.cat([v["boxes"] for v in targets])
+
         if tgt_ids.nelement() == 0: # if no targets (for patch-based training)
             return []
         # Compute the classification cost. Contrary to the loss, we don't use the NLL,
         # but approximate it in 1 - proba[target class].
         # The 1 is a constant that doesn't change the matching, it can be ommitted.
-        cost_class = -out_prob[:, tgt_ids]
+        cost_class = -out_prob[:, tgt_ids.long()]
 
         # Compute the L1 cost between boxes
         cost_bbox = torch.cdist(out_bbox, tgt_bbox, p=1)
 
-        # Compute the giou cost betwen boxes
         cost_giou = -generalized_bbox_iou_3d(
             box_cxcyczwhd_to_xyzxyz(out_bbox),
             box_cxcyczwhd_to_xyzxyz(tgt_bbox)
@@ -97,18 +103,24 @@ class HungarianMatcher(nn.Module):
         C = C.nan_to_num()
 
         sizes = [len(v["boxes"]) for v in targets]
+
         if dm_flag and self.dense_matching and not self.class_matching:
             indices = []
             for i, c in enumerate(C.split(sizes, -1)):
                 k = c[i].shape[-1] # classes=instances in GT
                 if k == 0: # for patch based if no GT
                     repeats = 0
+                    c_for_matching = c[i].repeat(1, repeats) # repeat GT
                 else:
-                    repeats = math.ceil(self.dense_matching_lambda * num_queries / k)
-                c_for_matching = c[i].repeat(1, repeats) # repeat GT
+                    if self.extra_classes > 0 or self.config["CL_replay"] or self.config["mixing_datasets"]:
+                        c_for_matching = c[i]
+                    else:
+                        repeats = math.ceil(self.dense_matching_lambda * num_queries / k)
+                        c_for_matching = c[i].repeat(1, repeats) # repeat GT
                 idx_logits, idx_classes = linear_sum_assignment(c_for_matching)
                 idx_classes = idx_classes % sizes[i] # modulo num_classes (sizes[i]) to get class_ids from matched ids
                 indices.append((idx_logits, idx_classes))
+
             ret = [(torch.as_tensor(i, dtype=torch.int64), torch.as_tensor(j, dtype=torch.int64)) for i, j in indices]
             return ret
         elif dm_flag and self.class_matching:

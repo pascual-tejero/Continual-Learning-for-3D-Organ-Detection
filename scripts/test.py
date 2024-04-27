@@ -57,14 +57,33 @@ class Tester:
         # Get path to checkpoint
         avail_checkpoints = [path for path in path_to_run.iterdir() if 'model_' in str(path)]
         avail_checkpoints.sort(key=lambda x: len(str(x)))
-        if args.last:
-            path_to_ckpt = avail_checkpoints[0]
+
+        for a in avail_checkpoints:
+            if args.model_load == str(a):
+                path_to_ckpt = a
+                break
         else:
-            path_to_ckpt = avail_checkpoints[-1]
+            if args.model_load == 'last':
+                path_to_ckpt = [path for path in avail_checkpoints if 'last' in str(path)]
+            elif args.model_load == 'best':
+                path_to_ckpt = [path for path in avail_checkpoints if 'best' in str(path)]
+            elif args.model_load == 'best_val':
+                path_to_ckpt = [path for path in avail_checkpoints if 'best_val' in str(path)]
+            elif args.model_load == 'best_test':
+                path_to_ckpt = [path for path in avail_checkpoints if 'best_test' in str(path)]
+            elif isinstance(int(args.model_load), int):
+                path_to_ckpt = [path for path in avail_checkpoints if args.model_load in str(path)]
+
+        
+            if len(path_to_ckpt) == 0:
+                raise ValueError('No checkpoint found for specified epoch.')
+            path_to_ckpt = path_to_ckpt[0]
+
+        print(f'Loading checkpoint: {path_to_ckpt}')
 
         # Build necessary components
         self._set_to_eval = 'val' if args.val else 'test'
-        self._test_loader = get_loader(self.config, self._set_to_eval, batch_size=1)
+        self._test_loader = get_loader(self.config, self._set_to_eval, batch_size=1, test_script=True)
 
         self._evaluator = DetectionEvaluator(
             classes=list(self.config['labels'].values()),
@@ -396,10 +415,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
     # Add necessary args
-    parser.add_argument('--run', required=True, type=str, help='Name of experiment in transoar/runs.')
+    parser.add_argument('--run', required=True, type=str, help='Name of experiment in ./runs.')
     parser.add_argument('--num_gpu', type=int, default=-1, help='Use model_last instead of model_best.')
     parser.add_argument('--val', action='store_true', help='Evaluate performance on test set.')
-    parser.add_argument('--last', action='store_true', help='Use model_last instead of model_best.')
+    parser.add_argument('--model_load', type=str, default='last', help='Load model from checkpoint. Options: last, best_val, best_test, epoch number.')
     parser.add_argument('--save_preds', action='store_true', help='Save predictions.')
     parser.add_argument('--save_attn_map', action='store_true', help='Saves sampling locations of predictions.')
     parser.add_argument('--per_sample_results', action='store_true', help='Saves per sample results of predictions.')
