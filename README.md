@@ -1,3 +1,7 @@
+# Continual Learning for 3D Organ Detection
+Master thesis project at the Technical University of Munich (TUM). Still in progress...
+
+
 # New config parameters
 DAB & two-stage (configure "neck" sub-configuration)
 - use_dab: True 
