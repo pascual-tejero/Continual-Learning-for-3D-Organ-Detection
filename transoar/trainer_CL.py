@@ -807,7 +807,7 @@ class Trainer_CL:
 
         # Get the top CL_replay_samples samples
         replay_samples = dict(itertools.islice(replay_scores.items(), self._config['CL_replay_samples']))
-    
+
         del old_model_samples_rep, self._train_loader
         self._train_loader = get_loader_CLreplay_selected_samples(config=self._config,
                                                                 split='train',

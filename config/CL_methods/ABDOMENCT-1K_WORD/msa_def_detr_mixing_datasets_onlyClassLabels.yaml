@@ -11,7 +11,7 @@ seed: 10
 # Continual learning
 CL_replay: False # Continual learning with replay
 CL_replay_samples: 50 # Number of samples to replay (from previous dataset: ABDOMENCT-1K)
-CL_reg: True # Continual learning with regularization
+CL_reg: False # Continual learning with regularization
 few_shot_training: False # # Training samples limited
 few_shot_samples: 100 # Number of samples to train with few-shot
 mixing_datasets: True # Mixing training samples from both datasets

@@ -11,7 +11,7 @@ seed: 10
 # Continual learning
 CL_replay: False # Continual learning with replay
 CL_replay_samples: 50 # Number of samples to replay (from previous dataset: ABDOMENCT-1K)
-CL_reg: True # Continual learning with regularization
+CL_reg: False # Continual learning with regularization
 val_interval: 1 # Validation interval
 test_interval: 1 # Test interval
 few_shot_training: True # # Training samples limited
