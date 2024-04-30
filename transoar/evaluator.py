@@ -183,9 +183,9 @@ class DetectionEvaluator:
                 metric_curves.update(curve)
         return metric_scores
     
-    def eval_replay(self, results):
+    def eval_replay(self, result):
         """
-        Accumulate results of individual batches and compute final metrics
+        Compute final metrics for replay evaluation
 
         Returns:
             Dict[str, float]: dictionary with scalar values for evaluation
@@ -195,7 +195,7 @@ class DetectionEvaluator:
         metric_curves = {}
         for metric_idx, metric in enumerate(self.metrics):
             _filter = partial(self.iou_filter, iou_idx=self.iou_mapping[metric_idx])
-            iou_filtered_results = list(map(_filter, results))    # no filtering
+            iou_filtered_results = list(map(_filter, result))    # no filtering
             
             score, curve = metric(iou_filtered_results)
             

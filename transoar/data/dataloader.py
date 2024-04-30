@@ -32,7 +32,7 @@ def get_loader(config, split, batch_size=None, test_script=False):
         )
     elif config["CL_reg"] is True and config["CL_replay"] is False: # Training with CL_reg method
         if split == 'test': # Test on both datasets to see the evolution of performance with CL_reg method
-            dataset_1 = TransoarDataset(config, split)
+            dataset_1 = TransoarDataset(config, split, dataset=1)
             dataloader_1 = DataLoader(
                 dataset_1, batch_size=batch_size, shuffle=shuffle,
                 num_workers=config['num_workers'], collate_fn=collator

@@ -93,7 +93,6 @@ class Trainer_CL:
             iou_range_coco=(0.5, 0.95, 0.05),
             sparse_results=True
         )
-        
 
         # Init main metric for checkpoint
         self._main_metric_key = 'mAP_coco'
@@ -453,79 +452,6 @@ class Trainer_CL:
                         self._writer.add_histogram('grads/' + name, param.grad, int(num_epoch))
 
     @torch.no_grad()
-    def _test(self, num_epoch):
-        self._model.eval() # Set model to evaluation mode
-
-        mean_mAP_coco = []
-
-        # Test for each dataset (WORD and ABDOMEN_CT_1K)
-        for idx, dataloader_test in enumerate(self._test_loader):
-            
-            if idx == 0: # WORD dataset
-                evaluator_test = DetectionEvaluator(
-                    classes=list(WORD['labels'].values()),
-                    classes_small=WORD['labels_small'],
-                    classes_mid=WORD['labels_mid'],
-                    classes_large=WORD['labels_large'],
-                    iou_range_nndet=(0.1, 0.5, 0.05),
-                    iou_range_coco=(0.5, 0.95, 0.05),
-                    sparse_results=False
-                )
-            else: # ABDOMEN_CT_1K dataset
-                evaluator_test = DetectionEvaluator(
-                    classes=list(ABDOMENCT_1K['labels'].values()),
-                    classes_small=ABDOMENCT_1K['labels_small'],
-                    classes_mid=ABDOMENCT_1K['labels_mid'],
-                    classes_large=ABDOMENCT_1K['labels_large'],
-                    iou_range_nndet=(0.1, 0.5, 0.05),
-                    iou_range_coco=(0.5, 0.95, 0.05),
-                    sparse_results=False
-                )
-
-            for data, _, bboxes, _, _ in tqdm(dataloader_test):
-
-                data = data.to(device=self._device)
-
-                targets = {
-                    'boxes': bboxes[0][0].to(dtype=torch.float, device=self._device),
-                    'labels': bboxes[0][1].to(device=self._device)
-                }
-
-                out = self._model(data)
-
-                pred_boxes, pred_classes, pred_scores = inference(out)
-                
-                gt_boxes = [targets['boxes'].detach().cpu().numpy()]
-                gt_classes = [targets['labels'].detach().cpu().numpy()]
-
-                # Add pred to evaluator
-                evaluator_test.add(
-                    pred_boxes=pred_boxes,
-                    pred_classes=pred_classes,
-                    pred_scores=pred_scores,
-                    gt_boxes=gt_boxes,
-                    gt_classes=gt_classes
-                )
-
-            metric_scores = evaluator_test.eval()
-            
-            os.makedirs(self._path_to_run / 'test_during_training', exist_ok=True)
-            os.makedirs(self._path_to_run / 'test_during_training' / f"{num_epoch}_epoch", exist_ok=True)
-
-            mean_mAP_coco.append(metric_scores['mAP_coco'])
-
-            if idx == 0: # WORD dataset
-                write_json(metric_scores, self._path_to_run / 'test_during_training' / f"{num_epoch}_epoch" / 'WORD_dataset.json')
-            else: # ABDOMEN_CT_1K dataset
-                write_json(metric_scores, self._path_to_run / 'test_during_training' / f"{num_epoch}_epoch" / f'ABDOMENCT-1K_dataset.json')
-        
-        mean_mAP_coco = np.mean(mean_mAP_coco)
-        
-        if self.best_performance_value < mean_mAP_coco:
-            self.best_performance_value = mean_mAP_coco
-            self._save_checkpoint(num_epoch, f'model_best_test_{mean_mAP_coco:.3f}_in_ep{num_epoch}.pt')
-
-    @torch.no_grad()
     def _validate(self, num_epoch):
         
         self._model.eval()
@@ -697,7 +623,85 @@ class Trainer_CL:
             seg_hd95=seg_hd95 # log Hausdorff
         )
         
+    @torch.no_grad()
+    def _test(self, num_epoch):
+        self._model.eval() # Set model to evaluation mode
+
+        mean_mAP_coco = []
+
+        # Test for each dataset (WORD and ABDOMEN_CT_1K)
+        for idx, dataloader_test in enumerate(self._test_loader):
+
+            if idx == 0: # WORD dataset
+                evaluator_test = DetectionEvaluator(
+                    classes=list(WORD['labels'].values()),
+                    classes_small=WORD['labels_small'],
+                    classes_mid=WORD['labels_mid'],
+                    classes_large=WORD['labels_large'],
+                    iou_range_nndet=(0.1, 0.5, 0.05),
+                    iou_range_coco=(0.5, 0.95, 0.05),
+                    sparse_results=False
+                )
+            else: # ABDOMEN_CT_1K dataset
+                evaluator_test = DetectionEvaluator(
+                    classes=list(ABDOMENCT_1K['labels'].values()),
+                    classes_small=ABDOMENCT_1K['labels_small'],
+                    classes_mid=ABDOMENCT_1K['labels_mid'],
+                    classes_large=ABDOMENCT_1K['labels_large'],
+                    iou_range_nndet=(0.1, 0.5, 0.05),
+                    iou_range_coco=(0.5, 0.95, 0.05),
+                    sparse_results=False
+                )
+            
+            for data, _, bboxes, _, _ in tqdm(dataloader_test):
+                # print labels of bboxes
+                # print(bboxes[0][1])
+
+                data = data.to(device=self._device) # Put data to gpu
+
+                det_targets = [] # List to store targets
+                for item in bboxes: # Put data to gpu
+                    target = {
+                        'boxes': item[0].to(dtype=torch.float, device=self._device),
+                        'labels': item[1].to(device=self._device)
+                    }
+                    det_targets.append(target) # Append target to list
+
+                out = self._model(data) # Make prediction
+
+                pred_boxes, pred_classes, pred_scores = inference(out) # Get predictions
+                
+                gt_boxes = [targets['boxes'].detach().cpu().numpy() for targets in det_targets]
+                gt_classes = [targets['labels'].detach().cpu().numpy() for targets in det_targets]
+
+                # Add pred to evaluator
+                evaluator_test.add(
+                    pred_boxes=pred_boxes,
+                    pred_classes=pred_classes,
+                    pred_scores=pred_scores,
+                    gt_boxes=gt_boxes,
+                    gt_classes=gt_classes
+                )
+
+            metric_scores = evaluator_test.eval() # Evaluate predictions
+            evaluator_test.reset() # Reset evaluator
+            del evaluator_test # Delete evaluator
+            
+            os.makedirs(self._path_to_run / 'test_during_training', exist_ok=True)
+            os.makedirs(self._path_to_run / 'test_during_training' / f"{num_epoch}_epoch", exist_ok=True)
+
+            mean_mAP_coco.append(metric_scores['mAP_coco'])
+
+            if idx == 0: # WORD dataset
+                write_json(metric_scores, self._path_to_run / 'test_during_training' / f"{num_epoch}_epoch" / 'WORD_dataset.json')
+            else: # ABDOMEN_CT_1K dataset
+                write_json(metric_scores, self._path_to_run / 'test_during_training' / f"{num_epoch}_epoch" / f'ABDOMENCT-1K_dataset.json')
         
+        mean_mAP_coco = np.mean(mean_mAP_coco)
+        
+        if self.best_performance_value < mean_mAP_coco:
+            self.best_performance_value = mean_mAP_coco
+            self._save_checkpoint(num_epoch, f'model_best_test_{mean_mAP_coco:.3f}_in_ep{num_epoch}.pt')        
 
     def run(self):
         if self._epoch_to_start == 0:   # For initial performance estimation
@@ -747,14 +751,14 @@ class Trainer_CL:
             if epoch % 500 == 0:
                 self._save_checkpoint(epoch, f'model_epoch_{epoch}.pt')
 
-
+    @torch.no_grad()
     def _select_samples_for_replay(self):
         
         evaluator_replay = DetectionEvaluator(
-            classes=list(self._config['labels'].values()),
-            classes_small=self._config['labels_small'],
-            classes_mid=self._config['labels_mid'],
-            classes_large=self._config['labels_large'],
+            classes=list(ABDOMENCT_1K['labels'].values()),
+            classes_small=ABDOMENCT_1K['labels_small'],
+            classes_mid=ABDOMENCT_1K['labels_mid'],
+            classes_large=ABDOMENCT_1K['labels_large'],
             iou_range_nndet=(0.1, 0.5, 0.05),
             iou_range_coco=(0.5, 0.95, 0.05),
             sparse_results=False
@@ -762,11 +766,11 @@ class Trainer_CL:
         replay_scores = {}
 
         # Load old model from config["CL_models"]["old_model_path"]
-        old_model = TransoarNet(self._config).to(device=self._device)
+        old_model_samples_rep = TransoarNet(self._config).to(device=self._device)
         checkpoint_old_model = torch.load(self._config["CL_models"]["old_model_path"])
-        old_model.load_state_dict(checkpoint_old_model['model_state_dict'])
-        old_model.eval()
-        for param in old_model.parameters():
+        old_model_samples_rep.load_state_dict(checkpoint_old_model['model_state_dict'])
+        old_model_samples_rep.eval()
+        for param in old_model_samples_rep.parameters():
             param.requires_grad = False
 
         for data, _, bboxes, _, path in tqdm(self._train_loader):
@@ -778,7 +782,7 @@ class Trainer_CL:
                 'labels': bboxes[0][1].to(device=self._device)
             }
 
-            out = old_model(data)
+            out = old_model_samples_rep(data)
 
             pred_boxes, pred_classes, pred_scores = inference(out)
             
@@ -796,13 +800,15 @@ class Trainer_CL:
             metric_scores = evaluator_replay.eval_replay(result)
             replay_scores[path[0]] = metric_scores['mAP_coco']
 
+        evaluator_replay.reset() # Reset evaluator
+
         # Sort the replay scores in ascending order
         replay_scores = dict(sorted(replay_scores.items(), key=lambda item: item[1]))
 
         # Get the top CL_replay_samples samples
         replay_samples = dict(itertools.islice(replay_scores.items(), self._config['CL_replay_samples']))
-
-        self._train_loader = None
+    
+        del old_model_samples_rep, self._train_loader
         self._train_loader = get_loader_CLreplay_selected_samples(config=self._config,
                                                                 split='train',
                                                                 batch_size=self._config['batch_size'],

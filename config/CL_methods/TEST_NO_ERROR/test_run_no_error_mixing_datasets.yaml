@@ -38,7 +38,7 @@ bbox_padding: 1
 test: True
 
 # Dataloader
-batch_size: 2 # 2 (normal, 1 reduced params)
+batch_size: 1 # 2 (normal, 1 reduced params)
 shuffle: True
 num_workers: 1 # 10 (normal, 1 lower 80GB GPU)
 

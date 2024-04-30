@@ -73,16 +73,12 @@ def train(config, args):
         val_loader = get_loader(config, 'val')
 
     if config['test']:
-        test_loader = get_loader(config, 'test', batch_size=1)
+        test_loader = get_loader(config, 'test') #### ??? batch_size=config['batch_size']??
     else:
         test_loader = None
     
     # Load model from old model checkpoint
-    model = TransoarNet(config).to(device=device)
-    if config["mixing_datasets"] is False: # Load old model if not mixing training
-        checkpoint_model = torch.load(config["CL_models"]["old_model_path"]) # Start main model with old model
-        model.load_state_dict(checkpoint_model['model_state_dict'])
-    
+    model = TransoarNet(config).to(device=device)    
 
     if args.medicalnet:  # Download pretrained model from https://github.com/Tencent/MedicalNet
         assert config['backbone']['name'] == 'resnet', 'Loading MedicalNet is only possible if ResNet backbone is configured!'
@@ -155,6 +151,10 @@ def train(config, args):
     path_to_run = Path(os.getcwd()) / 'runs' / config['experiment_name']
     path_to_run.mkdir(exist_ok=True)
 
+    # Start CL approach from old model if not mixing datasets training
+    if config["mixing_datasets"] is False: 
+        checkpoint_model = torch.load(config["CL_models"]["old_model_path"]) # Start main model with old model
+        model.load_state_dict(checkpoint_model['model_state_dict'])
 
     # Load checkpoint if applicable
     if config.get('resume', False) or args.resume:
