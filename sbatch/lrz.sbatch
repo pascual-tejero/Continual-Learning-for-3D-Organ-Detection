@@ -9,6 +9,7 @@ ENV_name=msadet
 BASE_DIR=/dss/dsshome1/01/ge32fix2
 ENV_DIR=ENVS
 DATA_DIR=/dss/dsshome1/01/ge32fix2/DATASETS/
+DATA_DIR=/dss/dssmcmlfs01/pr62la/pr62la-dss-0002/Mori/PASCUAL/DATASETS/
 
 srun --pty --container-mounts=${DATA_DIR}:/mnt/data,${BASE_DIR}:/mnt/code \
 --container-image=${BASE_DIR}/${ENV_DIR}/${ENV_name}.sqsh bash
